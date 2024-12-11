@@ -5,6 +5,7 @@
 import os
 from dataclasses import dataclass
 from megatron.core.transformer import TransformerConfig
+from megatron.core.transformer.enums import AttnBackend
 from megatron.core.utils import is_te_min_version
 
 
@@ -60,6 +61,8 @@ class RetroConfig(TransformerConfig):
         """Validate Retro config."""
 
         super().__post_init__()
+
+        self.attention_backend = AttnBackend.unfused
 
         # Validate Transformer Engine version.
         if is_te_min_version("1.3"):
