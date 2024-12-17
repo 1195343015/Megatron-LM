@@ -1353,6 +1353,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
     timers('interval-time', log_level=0).start(barrier=True)
     print_datetime('before the start of training step')
     report_memory_flag = True
+    pre_hook_enabled = False
     should_exit = False
     exit_code = 0
 
@@ -1422,6 +1423,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         # `forward_backward_func` are no-ops.
         param_sync_func = config.param_sync_func
         config.param_sync_func = None
+        pre_hook_enabled = False
     # Also, check weight hash across DP replicas to be very pedantic.
     if args.check_weight_hash_across_dp_replicas_interval is not None:
         assert check_param_hashes_across_dp_replicas(model, cross_check=True), \
@@ -1490,6 +1492,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 if args.use_distributed_optimizer and args.overlap_param_gather:
                     enable_forward_pre_hook(model)
                     config.param_sync_func = param_sync_func
+                    pre_hook_enabled = True
 
         iteration += 1
         batch_size = mpu.get_data_parallel_world_size() * \
@@ -1532,6 +1535,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
             timers('interval-time').stop()
             if args.use_distributed_optimizer and args.overlap_param_gather:
                 disable_forward_pre_hook(model)
+                pre_hook_enabled = False
             if args.manual_gc and args.manual_gc_eval:
                 # Collect all objects.
                 gc.collect()
@@ -1552,6 +1556,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                 gc.collect(generation=0)
             if args.use_distributed_optimizer and args.overlap_param_gather:
                 enable_forward_pre_hook(model)
+                pre_hook_enabled = True
             timers('interval-time', log_level=0).start(barrier=True)
 
             if args.enable_ft_package and ft_integration.get_rank_monitor_client() is not None:
@@ -1578,7 +1583,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         writer.flush()
 
     # Close out pre-hooks if using distributed optimizer and overlapped param gather.
-    if args.use_distributed_optimizer and args.overlap_param_gather:
+    if pre_hook_enabled:
         disable_forward_pre_hook(model)
 
     if args.enable_ft_package and ft_integration.get_rank_monitor_client() is not None:
@@ -1878,12 +1883,15 @@ def build_train_valid_test_data_iterators(
     def _get_iterator(dataloader_type, dataloader):
         """Return dataset iterator."""
         if dataloader_type == "single":
-            return RerunDataIterator(dataloader)
+            return RerunDataIterator(iter(dataloader))
         elif dataloader_type == "cyclic":
-            return RerunDataIterator(cyclic_iter(dataloader))
+            return RerunDataIterator(iter(cyclic_iter(dataloader)))
         elif dataloader_type == "external":
             # External dataloader is passed through. User is expected to define how to iterate.
-            return RerunDataIterator(dataloader, make_iterable=False)
+            if isinstance(dataloader, list):
+                return [RerunDataIterator(d) for d in dataloader]
+            else:
+                return RerunDataIterator(dataloader)
         else:
             raise RuntimeError("unexpected dataloader type")
 
